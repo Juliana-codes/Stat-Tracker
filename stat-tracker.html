@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
+<title>Local Stat Tracker</title>
+<style>
+  :root { --pad: 12px; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, Arial, sans-serif; margin: var(--pad); }
+  h2 { margin: 8px 0; }
+
+  /* Top bar: Undo/Redo + Save status */
+  .topbar { display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
+  .btn-md { padding:14px 18px; border:none; border-radius:12px; cursor:pointer; font-size:18px; font-weight:800; background:#f2f2f2; }
+  .btn-sm { padding:10px 14px; border:none; border-radius:10px; cursor:pointer; font-size:14px; font-weight:700; background:#f2f2f2; }
+  .btn-disabled { opacity:0.5; pointer-events:none; }
+  .spacer { flex:1 1 auto; }
+  .muted { font-size:12px; color:#666; }
+
+  /* Setup / Roster editor */
+  .setup { border:1px solid #eee; border-radius:12px; padding:12px; margin-bottom:12px; background:#fafafa; }
+  .setup h3 { margin-top:0; }
+  textarea { width:100%; min-height:100px; padding:10px; border:1px solid #ddd; border-radius:10px; font-size:14px; }
+
+  /* On-court vertical stack */
+  #oncourtColumn { display:flex; flex-direction:column; gap:12px; }
+  .card {
+    border: 1px solid #e5e5e5; border-radius: 14px; padding: 14px;
+    width: 100%; display:flex; flex-direction:column; gap:12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+  }
+  .nameRow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .name { font-weight: 900; font-size: 26px; }
+  .inlineStats { font-size:18px; color:#333; font-weight:700; }
+
+  /* Action buttons: Tag (wide) | DFL (narrow) | Miss (wide) */
+  .btn { padding:22px; border:none; border-radius:14px; cursor:pointer; font-size:22px; font-weight:800; width:100%; }
+  .btn:active { transform: scale(0.98); }
+  .btn-tag { background:#e8f7ee; }
+  .btn-defl { background:#eef2ff; border-radius:14px; }
+  .btn-miss { background:#ffe9e9; }
+  .bar3 {
+    display:grid;
+    grid-template-columns: 1fr 0.6fr 1fr; /* DFL narrower */
+    gap:14px;
+    align-items:stretch;
+  }
+
+  /* Quick-sub prompt */
+  .prompt { font-size:14px; color:#444; margin: 4px 0 8px; }
+
+  /* Bench dock */
+  .benchDockWrap { margin-top: 14px; }
+  .dockTitle { font-weight:700; margin-bottom:6px; }
+  .benchDock {
+    display:flex; gap:12px; overflow-x:auto; padding:12px; border:1px solid #eee; border-radius:12px;
+    background:#fafafa;
+  }
+  .chip {
+    flex:0 0 auto;
+    font-size:20px; padding:14px 16px; border-radius:12px; background:#f1f1f1; border:1px solid #e5e5e5;
+    cursor:pointer; white-space:nowrap; line-height:1.2; min-height:44px;
+    box-shadow: 0 1px 1px rgba(0,0,0,0.03);
+  }
+  .chip:active { transform: scale(0.98); }
+
+  .divider { height:1px; background:#eee; margin:12px 0; }
+
+  /* Totals */
+  .totals h2 { margin-top: 14px; }
+  .totalsTable { width:100%; border-collapse: collapse; }
+  .totalsTable thead th {
+    text-align:left; font-size:16px; color:#555; padding:6px 4px;
+    border-bottom:1px solid #eee;
+  }
+  .totalsTable tbody td {
+    padding:10px 4px; font-size:18px; font-weight:700; border-bottom:1px dashed #f0f0f0;
+  }
+  .totalsName { font-weight:900; }
+
+  /* Bottom controls */
+  .controls-bottom { margin-top: 16px; display:flex; gap:10px; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <button id="undoBtn" class="btn-md" onclick="undoLast()">Undo</button>
+  <button id="redoBtn" class="btn-md" onclick="redoLast()">Redo</button>
+  <div class="spacer"></div>
+  <span id="saveState" class="muted">Saved</span>
+</div>
+
+<div class="setup" id="setupPanel">
+  <h3>Roster (one name per line)</h3>
+  <textarea id="rosterInput" placeholder="Karisma&#10;Maya D&#10;Ava&#10;Diana&#10;Jojo"></textarea>
+  <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;">
+    <button class="btn-sm" onclick="saveRoster()">Save Roster</button>
+    <button class="btn-sm" onclick="startGame()">Start Game (First 5 active)</button>
+    <button class="btn-sm" onclick="exportCSV()">Export CSV</button>
+    <button class="btn-sm" onclick="resetGame()">Reset Game</button>
+  </div>
+  <div class="muted" style="margin-top:6px;">Everything is stored locally on this device. No internet required.</div>
+</div>
+
+<!-- Quick-sub prompt -->
+<div id="qsPrompt" class="prompt" style="display:none;"></div>
+
+<h2>On Court</h2>
+<div id="oncourtColumn"></div>
+
+<!-- Bench dock -->
+<div class="benchDockWrap">
+  <div class="dockTitle">Bench (tap a name, then tap who comes OUT)</div>
+  <div id="benchDock" class="benchDock"></div>
+</div>
+
+<div class="divider"></div>
+
+<!-- Totals -->
+<div class="totals">
+  <h2>Totals</h2>
+  <table class="totalsTable">
+    <thead>
+      <tr>
+        <th>Player</th>
+        <th>Tags</th>
+        <th>Misses</th>
+        <th>Tags/Att</th>
+        <th>%</th>
+        <th>Defl</th>
+      </tr>
+    </thead>
+    <tbody id="totalsBody"></tbody>
+  </table>
+</div>
+
+<div class="controls-bottom">
+  <button class="btn-sm" onclick="exportCSV()">Export CSV</button>
+  <button class="btn-sm" onclick="resetGame()">Reset Game</button>
+</div>
+
+<script>
+  // ------- Local data (localStorage) -------
+  const KEY = 'edge_local_stat_tracker_v1';
+
+  const defaultState = () => ({
+    roster: [],                       // array of names
+    players: {},                      // name -> {tags, misses, defl, active}
+    history: [],                      // undo stack (array of events)
+    future: [],                       // redo stack
+    log: []                           // full event log for CSV
+  });
+
+  let S = load();
+
+  function load() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return defaultState();
+      const obj = JSON.parse(raw);
+      // basic sanity
+      obj.roster ||= [];
+      obj.players ||= {};
+      obj.history ||= [];
+      obj.future ||= [];
+      obj.log ||= [];
+      return obj;
+    } catch (_) { return defaultState(); }
+  }
+
+  function persist() {
+    localStorage.setItem(KEY, JSON.stringify(S));
+    markSaved();
+  }
+
+  let saveTimer = null;
+  function markDirty() {
+    clearTimeout(saveTimer);
+    const el = document.getElementById('saveState');
+    el.textContent = 'Saving…';
+    saveTimer = setTimeout(()=>{ el.textContent = 'Saved'; }, 400);
+  }
+  function markSaved() {
+    const el = document.getElementById('saveState');
+    el.textContent = 'Saved';
+  }
+
+  // ------- Setup actions -------
+  function saveRoster() {
+    const txt = document.getElementById('rosterInput').value || '';
+    const names = txt.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    const seen = new Set();
+    const uniq = names.filter(n => { if (seen.has(n)) return false; seen.add(n); return true; });
+
+    // carry over existing stats if name already there
+    const players = {};
+    uniq.forEach(n => {
+      const prev = S.players[n];
+      players[n] = prev ? {...prev} : { tags:0, misses:0, defl:0, active:false };
+    });
+
+    S.roster = uniq;
+    S.players = players;
+    S.history = [];
+    S.future = [];
+    markDirty(); persist(); render();
+  }
+
+  function startGame() {
+    if (S.roster.length === 0) saveRoster();
+    // set first 5 active, others bench
+    S.roster.forEach((n,i)=> { S.players[n].active = i < 5; });
+    S.history = [];
+    S.future = [];
+    markDirty(); persist(); render();
+  }
+
+  function resetGame() {
+    if (!confirm('Reset tags/misses/deflections and clear the court?')) return;
+    Object.values(S.players).forEach(p => { p.tags=0; p.misses=0; p.defl=0; p.active=false; });
+    S.history = [];
+    S.future = [];
+    S.log = [];
+    markDirty(); persist(); render();
+  }
+
+  // ------- Rendering -------
+  let subMode = null; // {inName}
+
+  function render() {
+    // Prefill roster textarea if empty
+    const ta = document.getElementById('rosterInput');
+    if (!ta.value && S.roster.length) ta.value = S.roster.join('\n');
+
+    // Undo/redo buttons
+    document.getElementById('undoBtn').classList.toggle('btn-disabled', S.history.length === 0);
+    document.getElementById('redoBtn').classList.toggle('btn-disabled', S.future.length === 0);
+
+    // Quick-sub prompt
+    const prompt = document.getElementById('qsPrompt');
+    if (subMode) {
+      prompt.style.display = '';
+      prompt.textContent = `Quick Sub: tap who comes OUT for ${subMode.inName}`;
+    } else {
+      prompt.style.display = 'none';
+      prompt.textContent = '';
+    }
+
+    // Build on-court and bench lists
+    const onCourt = S.roster.filter(n => S.players[n]?.active);
+    const bench = S.roster.filter(n => !S.players[n]?.active);
+
+    // On court
+    const col = document.getElementById('oncourtColumn');
+    col.innerHTML = '';
+    onCourt.forEach(name => {
+      const p = S.players[name];
+      const attempts = (p.tags||0) + (p.misses||0); // defl not in attempts
+      const tagBtn  = button('btn btn-tag', 'Tag', (e)=>{ e.stopPropagation(); doDelta(name,'tags',+1); });
+      const defBtn  = button('btn btn-defl', 'DFL', (e)=>{ e.stopPropagation(); doDelta(name,'defl',+1); });
+      const missBtn = button('btn btn-miss', 'Miss', (e)=>{ e.stopPropagation(); doDelta(name,'misses',+1); });
+      const card = div('card', {
+        onclick: ()=> maybeCompleteQuickSubOut(name)
+      }, [
+        div('nameRow', {}, [
+          div('name', {}, name),
+          div('inlineStats', {}, `· ${p.tags} | ${p.misses} | ${attempts} Att`)
+        ]),
+        div('bar3', {}, [tagBtn, defBtn, missBtn])
+      ]);
+      col.appendChild(card);
+    });
+
+    // Bench chips
+    const dock = document.getElementById('benchDock');
+    dock.innerHTML = '';
+    bench.forEach(name => dock.appendChild(div('chip', { onclick: ()=>quickSubStart(name) }, name)));
+
+    // Totals table (sorted by tags desc)
+    const body = document.getElementById('totalsBody');
+    body.innerHTML = '';
+    const rows = S.roster.map(name => {
+      const p = S.players[name] || {tags:0,misses:0,defl:0};
+      const tags = p.tags||0, misses = p.misses||0, defl = p.defl||0;
+      const att  = tags + misses;
+      const pct  = att ? ((tags/att)*100).toFixed(1) : '0.0';
+      return { name, tags, misses, att, pct, defl };
+    }).sort((a,b)=> b.tags - a.tags);
+
+    rows.forEach(r => {
+      body.appendChild(tr([
+        td('totalsName', r.name),
+        td('', String(r.tags)),
+        td('', String(r.misses)),
+        td('', `${r.tags}/${r.att}`),
+        td('', `${r.pct}%`),
+        td('', String(r.defl)),
+      ]));
+    });
+  }
+
+  // ------- Actions & history (undo/redo) -------
+  function doDelta(name, field, delta) {
+    const p = S.players[name]; if (!p) return;
+    // apply
+    p[field] = Math.max(0, (Number(p[field])||0) + delta);
+    // log & history
+    const ev = { t:'delta', name, field, delta, ts: Date.now() };
+    S.history.push(ev);
+    S.future = [];
+    S.log.push(ev);
+    markDirty(); persist(); render();
+  }
+
+  function quickSubStart(inName) { subMode = { inName }; render(); }
+
+  function maybeCompleteQuickSubOut(outName) {
+    if (!subMode) return;
+    doSub(outName, subMode.inName);
+    subMode = null;
+  }
+
+  function doSub(outName, inName) {
+    if (outName === inName) return;
+    const outP = S.players[outName], inP = S.players[inName];
+    if (!outP || !inP) return;
+    outP.active = false; inP.active = true;
+
+    const ev = { t:'sub', out: outName, in: inName, ts: Date.now() };
+    S.history.push(ev);
+    S.future = [];
+    S.log.push(ev);
+    markDirty(); persist(); render();
+  }
+
+  function undoLast() {
+    if (S.history.length === 0) return;
+    const ev = S.history.pop();
+    let inv = null;
+    if (ev.t === 'delta') {
+      inv = { ...ev, delta: -ev.delta, ts: Date.now() };
+      const p = S.players[ev.name];
+      if (p) p[ev.field] = Math.max(0, (Number(p[ev.field])||0) - ev.delta);
+    } else if (ev.t === 'sub') {
+      inv = { t:'sub', out: ev.in, in: ev.out, ts: Date.now() };
+      const outP = S.players[ev.in], inP = S.players[ev.out];
+      if (outP && inP) { outP.active=false; inP.active=true; }
+    }
+    if (inv) {
+      S.future.push(ev);
+      S.log.push({ t:'undo', of:ev, ts: Date.now() });
+      markDirty(); persist(); render();
+    }
+  }
+
+  function redoLast() {
+    if (S.future.length === 0) return;
+    const ev = S.future.pop();
+    if (ev.t === 'delta') {
+      const p = S.players[ev.name]; if (p) p[ev.field] = Math.max(0, (Number(p[ev.field])||0) + ev.delta);
+    } else if (ev.t === 'sub') {
+      const outP = S.players[ev.out], inP = S.players[ev.in];
+      if (outP && inP) { outP.active=false; inP.active=true; }
+    }
+    S.history.push(ev);
+    S.log.push({ t:'redo', of:ev, ts: Date.now() });
+    markDirty(); persist(); render();
+  }
+
+  // ------- CSV Export -------
+  function exportCSV() {
+    // Build a minimal event log CSV and a summary CSV in one file
+    const header1 = 'type,name,field,delta,out,in,timestamp\n';
+    const rows1 = S.log.map(ev => {
+      if (ev.t === 'delta') return `delta,${csv(ev.name)},${ev.field},${ev.delta},,,${ev.ts}`;
+      if (ev.t === 'sub')   return `sub,,,,${csv(ev.out)},${csv(ev.in)},${ev.ts}`;
+      if (ev.t === 'undo')  return `undo,,,,,,${ev.ts}`;
+      if (ev.t === 'redo')  return `redo,,,,,,${ev.ts}`;
+      return '';
+    }).filter(Boolean).join('\n');
+
+    const header2 = '\n\nplayer,tags,misses,deflections,attempts,percent\n';
+    const rows2 = S.roster.map(name => {
+      const p = S.players[name] || {tags:0,misses:0,defl:0};
+      const att = (p.tags||0) + (p.misses||0);
+      const pct = att ? ((p.tags/att)*100).toFixed(1) : '0.0';
+      return `${csv(name)},${p.tags||0},${p.misses||0},${p.defl||0},${att},${pct}`;
+    }).join('\n');
+
+    const csvText = header1 + rows1 + header2 + rows2 + '\n';
+    const blob = new Blob([csvText], {type:'text/csv'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const now = new Date().toISOString().replace(/[:T]/g,'-').slice(0,16);
+    a.href = url; a.download = `edge_stats_${now}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function csv(s) { return (''+s).replaceAll('"','""'); }
+
+  // ------- tiny DOM helpers -------
+  function el(tag, attrs={}, children=[]) {
+    const e = document.createElement(tag);
+    Object.entries(attrs).forEach(([k,v]) => (k in e) ? e[k]=v : e.setAttribute(k,v));
+    (Array.isArray(children)?children:[children]).forEach(c => {
+      if (typeof c === 'string') e.appendChild(document.createTextNode(c));
+      else if (c) e.appendChild(c);
+    });
+    return e;
+  }
+  const div = (cls, attrs={}, children=[]) => {
+    if (typeof attrs === 'string' || Array.isArray(attrs)) { children = attrs; attrs = {}; }
+    return el('div', Object.assign({className:cls}, attrs), children);
+  };
+  const button = (cls, text, onclick) => {
+    const b = el('button', { className: cls }, [text]);
+    if (onclick) b.addEventListener('click', onclick);
+    return b;
+  };
+  const td = (cls, text) => {
+    const c = el('td', {}, [text]);
+    if (cls) c.className = cls;
+    return c;
+  };
+  const tr = (cells) => {
+    const row = el('tr');
+    cells.forEach(c => row.appendChild(c));
+    return row;
+  };
+
+  // ------- boot -------
+  render();
+</script>
+</body>
+</html>
